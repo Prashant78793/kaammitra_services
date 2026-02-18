@@ -6,6 +6,9 @@ import {
   getJobs,
   getJobById,
   updateJobStatus,
+  removeCityFromJob,
+  addCityToJob,
+  deleteJob,
 } from "../controllers/jobController.js";
 
 const router = express.Router();
@@ -28,5 +31,14 @@ router.get("/:id", getJobById);
 
 // update status (booking or job)
 router.patch("/:id/status", updateJobStatus);
+
+// remove a single city from a job
+router.patch("/:id/remove-city", removeCityFromJob);
+
+// add a single city to a job
+router.patch("/:id/add-city", addCityToJob);
+
+// delete a job (or booking) permanently
+router.delete("/:id", deleteJob);
 
 export default router;

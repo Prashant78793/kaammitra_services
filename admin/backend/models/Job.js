@@ -21,6 +21,6 @@ const jobSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// keep existing export behavior
-const Job = mongoose.models.Job || mongoose.model("Service", jobSchema);
+// ensure model name is 'Job' so it maps to the 'jobs' collection
+const Job = mongoose.models.Job || mongoose.model("Job", jobSchema);
 export default Job;

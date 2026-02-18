@@ -12,6 +12,7 @@ import jobRoutes from "./routes/jobRoutes.js";
 import providerRoutes from "./routes/providerRoutes.js";
 import customerRoutes from "./routes/customerRoutes.js";
 import financeRoutes from "./routes/financeRoutes.js";
+import bookingRoutes from "./routes/bookingRoutes.js";
 
 dotenv.config();
 const app = express();
@@ -24,11 +25,23 @@ if (!fs.existsSync(uploadsPath)) {
   console.log("📁 'uploads' folder created automatically");
 }
 
-// CORS
+// CORS - during development simply permit everything so any localhost port can talk to us
+// (tighten in production if needed via FRONTEND_ORIGIN env variable)
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
+
 app.use(
   cors({
-    origin: FRONTEND_ORIGIN,
+    origin: (origin, callback) => {
+      // if FRONTEND_ORIGIN is set we still respect it, otherwise allow all origins
+      if (!origin) return callback(null, true); // non-browser tools
+      if (process.env.NODE_ENV === "production") {
+        // in prod only allow configured origin
+        if (origin === FRONTEND_ORIGIN) return callback(null, true);
+        return callback(new Error("Not allowed by CORS"));
+      }
+      // dev: allow anything
+      return callback(null, true);
+    },
     credentials: true,
   })
 );
@@ -48,7 +61,18 @@ app.get("/", (req, res) => {
 
 // socket.io
 const io = new Server(server, {
-  cors: { origin: FRONTEND_ORIGIN, credentials: true },
+  // socket.io CORS: mirror the same permissive logic as HTTP server
+  cors: {
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (process.env.NODE_ENV === "production") {
+        if (origin === FRONTEND_ORIGIN) return callback(null, true);
+        return callback(new Error("Not allowed by CORS"));
+      }
+      return callback(null, true); // dev: allow anything
+    },
+    credentials: true,
+  },
 });
 app.set("io", io);
 
@@ -58,6 +82,7 @@ app.use("/api/jobs", jobRoutes);
 app.use("/api/providers", providerRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/finance", financeRoutes);
+app.use("/api/bookings", bookingRoutes);
 
 // MongoDB
 const MONGO_URI = process.env.MONGO_URI || "mongodb://127.0.0.1:27017/dashboardApp";

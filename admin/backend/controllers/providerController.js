@@ -28,14 +28,15 @@ export const addProvider = async (req, res) => {
       bankAccountNumber: parseIfJson(req.body.bankAccountNumber) || "",
       ifscCode: parseIfJson(req.body.ifscCode) || "",
       upiId: parseIfJson(req.body.upiId) || "",
-      status: "Pending", // New providers start as Pending
+      status: "Pending", // New providers start as Pending (capital P to match schema enum)
     };
 
     // remove empty / falsy email to avoid unique index duplicate
     if (!payload.email) delete payload.email;
 
     if (!payload.fullName || !payload.phoneNumber) {
-      return res.status(400).json({ message: "fullName and phoneNumber are required." });
+      console.warn("addProvider called without name/phone, payload: ", payload);
+      return res.status(400).json({ message: "fullName and phoneNumber are required.", payload });
     }
 
     const exists = await Provider.findOne({ phoneNumber: payload.phoneNumber });
@@ -48,7 +49,7 @@ export const addProvider = async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       io.emit("providerAdded", created);
-      const count = await Provider.countDocuments({ status: "Active" });
+      const count = await Provider.countDocuments({ status: "active" });
       io.emit("providerCount", { count });
     }
 
@@ -77,7 +78,7 @@ export const getProviders = async (req, res) => {
 // NEW: Get only Active providers
 export const getActiveProviders = async (req, res) => {
   try {
-    const providers = await Provider.find({ status: "Active" }).sort({ createdAt: -1 });
+    const providers = await Provider.find({ status: "active" }).sort({ createdAt: -1 });
     return res.json(providers);
   } catch (error) {
     console.error("Error fetching active providers:", error);
@@ -121,21 +122,28 @@ export const updateProvider = async (req, res) => {
       if (allowed.includes(k)) filtered[k] = req.body[k];
     });
 
+    // normalize status value to match schema enum (capitalize first letter)
+    if (filtered.status) {
+      const s = String(filtered.status).trim();
+      filtered.status = s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+    }
+
     const provider = await Provider.findByIdAndUpdate(req.params.id, filtered, { new: true });
     if (!provider) return res.status(404).json({ message: "Provider not found" });
 
     // Emit socket events
     if (io) {
-      if (filtered.status === "Active") {
+      // Emit events based on normalized status
+      if (filtered.status === "active") {
         io.emit("providerUpdated", provider);
-      } else if (filtered.status === "Suspended") {
+      } else if (filtered.status === "suspended") {
         io.emit("providerSuspended", provider);
       } else {
         io.emit("providerUpdated", provider);
       }
-      
-      // Emit updated count
-      const count = await Provider.countDocuments({ status: "Active" });
+
+      // Emit updated count (providers with status 'active')
+      const count = await Provider.countDocuments({ status: "active" });
       io.emit("providerCount", { count });
     }
 
@@ -160,8 +168,8 @@ export const getProviderByPhone = async (req, res) => {
       return res.status(404).json({ message: "Provider not found" });
     }
 
-    // Check if suspended
-    if (provider.status === "Suspended") {
+    // Check if suspended (normalize casing)
+    if (String(provider.status || "").toLowerCase() === "suspended") {
       return res.status(403).json({ message: "This provider account is suspended" });
     }
 

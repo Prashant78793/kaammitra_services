@@ -1,173 +1,79 @@
 import React, { useState, useEffect } from "react";
-import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
-import { I18nextProvider } from "react-i18next";
-import i18n from "./i18n";
-import Navbar from "./components/Navbar";
-import Footer from "./components/Footer";
-import Popup from "./components/Popup";
-import Home from "./pages/Home";
-import MoreServices from "./pages/MoreServices";
-import ServiceDetail from "./pages/ServiceDetail";
-import SignUp from "./pages/SignUp";
-import Login from "./pages/Login";
-import BookingPage from "./pages/BookingPage";
-import MyBookingHistory from "./pages/MyBookingHistory";
+import { Routes, Route, Navigate } from "react-router-dom";
+
+// Layout components
+import Sidebar from "./components/Sidebar";
+import Header from "./components/Header";
+
+// Main pages
+import DashboardProvider from "./pages/Dashboard";
+import Users from "./pages/Users";
+import Providers from "./pages/Providers";
+import Jobs from "./pages/Jobs";
+import Finance from "./pages/Finance";
+import Notification from "./pages/Notification";
+import Support from "./pages/Support";
 import Settings from "./pages/Settings";
-import LogOut from "./pages/LogOut";
-import PaymentPage from "./components/PaymentPage";
 
-export default function App() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [userName, setUserName] = useState("");
-  const [profileImage, setProfileImage] = useState("");
-  const [popupMessage, setPopupMessage] = useState("");
-  const [showPopup, setShowPopup] = useState(false);
-  const [registeredUsers, setRegisteredUsers] = useState([]);
-  const [darkMode, setDarkMode] = useState(
-    localStorage.getItem("theme") === "dark" ||
-    (!("theme" in localStorage) && window.matchMedia("(prefers-color-scheme: dark)").matches)
-  );
-  const [menuOpen, setMenuOpen] = useState(false);
+// Auth pages
+import Login from "./pages/Login";
+import Signup from "./pages/SignUp";
 
+const App = () => {
+  const [darkMode, setDarkMode] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+
+  // ✅ Check token on page load (persist login)
   useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add("dark");
-      localStorage.setItem("theme", "dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-      localStorage.setItem("theme", "light");
+    const token = localStorage.getItem("token");
+    if (token) {
+      setIsAuthenticated(true);
     }
-  }, [darkMode]);
-
-  const toggleDarkMode = () => {
-    setDarkMode(!darkMode);
-  };
-  const toggleMenu = () => setMenuOpen((prev) => !prev);
-
-  const triggerPopup = (message) => {
-    setPopupMessage(message);
-    setShowPopup(true);
-    setTimeout(() => setShowPopup(false), 3000);
-  };
-
-  const handleRegistrationComplete = (name, mobile) => {
-    setRegisteredUsers([...registeredUsers, { name, mobile }]);
-    setUserName(name);
-    setProfileImage("");
-    setIsLoggedIn(true);
-    triggerPopup("Registration successful! You are now logged in.");
-  };
-
-  const handleLoginComplete = (name, mobile) => {
-    setUserName(name);
-    setIsLoggedIn(true);
-    triggerPopup("Login successful!");
-  };
-
-  const handleLogout = () => {
-    setIsLoggedIn(false);
-    setUserName("");
-    setProfileImage("");
-    triggerPopup("You have been logged out!");
-  };
-
-  const handleEmergencyClick = () => {
-    triggerPopup("🚨 Emergency service requested! We're on our way.");
-  };
-
-  const ProtectedRoute = ({ children }) => {
-    if (!isLoggedIn) {
-      return <Navigate to="/login" replace />;
-    }
-    return children;
-  };
+  }, []);
 
   return (
-    <I18nextProvider i18n={i18n}>
-      <div className="min-h-screen font-sans transition-colors duration-300">
-        <Router>
-          <Navbar
-            isLoggedIn={isLoggedIn}
-            userName={userName}
-            profileImage={profileImage}
-            darkMode={darkMode}
-            toggleDarkMode={toggleDarkMode}
-            menuOpen={menuOpen}
-            toggleMenu={toggleMenu}
-            handleLogout={handleLogout}
+    <>
+      {isAuthenticated ? (
+        // ✅ Main App Layout after login
+        <div className={darkMode ? "dark" : ""}>
+          <div className="flex min-h-screen bg-gray-100 dark:bg-gray-900">
+            <Sidebar setIsAuthenticated={setIsAuthenticated} />
+            <div className="flex-1 flex flex-col">
+              <Header darkMode={darkMode} setDarkMode={setDarkMode} />
+              <main className="p-6 overflow-auto flex-1">
+                <Routes>
+                  <Route path="/" element={<DashboardProvider />} />
+                  <Route path="/users" element={<Users />} />
+                  <Route path="/providers" element={<Providers />} />
+                  <Route path="/jobs" element={<Jobs />} />
+                  <Route path="/finance" element={<Finance />} />
+                  <Route path="/notification" element={<Notification />} />
+                  <Route path="/support" element={<Support />} />
+                  <Route path="/settings" element={<Settings />} />
+                  {/* Redirect unknown routes */}
+                  <Route path="*" element={<Navigate to="/" />} />
+                </Routes>
+              </main>
+            </div>
+          </div>
+        </div>
+      ) : (
+        // ✅ Auth Pages (Login / Signup)
+        <Routes>
+          <Route path="/" element={<Navigate to="/login" />} />
+          <Route
+            path="/login"
+            element={<Login setIsAuthenticated={setIsAuthenticated} />}
           />
-          {showPopup && <Popup message={popupMessage} />}
-          <Routes>
-            <Route
-              path="/"
-              element={
-                <Home
-                  darkMode={darkMode}
-                  handleEmergencyClick={handleEmergencyClick}
-                  userName={userName}
-                  menuOpen={menuOpen}
-                  toggleMenu={toggleMenu}
-                  isLoggedIn={isLoggedIn}
-                />
-              }
-            />
-            <Route path="/signup" element={<SignUp onRegistrationComplete={handleRegistrationComplete} />} />
-            <Route path="/login" element={<Login onLoginComplete={handleLoginComplete} registeredUsers={registeredUsers} />} />
-            <Route path="/logout" element={<LogOut onLogout={handleLogout} />} />
-
-            {/* Protected Routes */}
-            <Route
-              path="/moreservices"
-              element={
-                <ProtectedRoute>
-                  <MoreServices />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/book-history"
-              element={
-                <ProtectedRoute>
-                  <MyBookingHistory />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                <ProtectedRoute>
-                  <Settings />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/service/:serviceName"
-              element={
-                <ProtectedRoute>
-                  <ServiceDetail />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/booking/:serviceName"
-              element={
-                <ProtectedRoute>
-                  <BookingPage darkMode={darkMode} />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/payment"
-              element={
-                <ProtectedRoute>
-                  <PaymentPage darkMode={darkMode} />
-                </ProtectedRoute>
-              }
-            />
-          </Routes>
-          <Footer darkMode={darkMode} />
-        </Router>
-      </div>
-    </I18nextProvider>
+          <Route
+            path="/signup"
+            element={<Signup setIsAuthenticated={setIsAuthenticated} />}
+          />
+          <Route path="*" element={<Navigate to="/login" />} />
+        </Routes>
+      )}
+    </>
   );
-}
+};
+
+export default App;

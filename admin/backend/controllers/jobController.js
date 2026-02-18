@@ -4,6 +4,9 @@ import Provider from "../models/Provider.js";
 import Client from "../models/Client.js"; // <-- ensure Client model is registered for populate
 import jwt from "jsonwebtoken";
 
+// Escape special regex chars in user-provided strings
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\\]\\]/g, "\\$&");
+
 /** Resolve provider by token in Authorization header. Returns provider or null */
 const resolveProviderFromToken = async (req) => {
   try {
@@ -99,16 +102,48 @@ export const getJobs = async (req, res) => {
     const bookingQuery = {};
     const jobQuery = {};
 
+    // helper removes parenthesized bit and any digits so that "Mumbai (150096)" -> "Mumbai"
+    const normalizeArea = (s) => {
+      let t = String(s || "").trim();
+      t = t.replace(/\(.*\)/, "").trim(); // drop parentheses
+      t = t.replace(/[0-9]+/g, "").trim(); // drop digits
+      t = t.replace(/^-+|-+$/g, "").trim(); // drop leading/trailing hyphens
+      t = t.replace(/\s+/g, " ").trim(); // normalize whitespace
+      return t.toLowerCase(); // convert to lowercase for matching
+    };
+
     if (provider && provider.serviceArea) {
-      const cityRegex = new RegExp(`^${String(provider.serviceArea).trim()}$`, "i");
-      bookingQuery.city = cityRegex;
-      // match any element of cities array (or legacy city field)
-      jobQuery.$or = [{ cities: cityRegex }, { city: cityRegex }];
+      const serviceAreaRaw = String(provider.serviceArea || "").trim();
+      const areas = serviceAreaRaw
+        .split(",")
+        .map((a) => a.trim())
+        .filter(Boolean)
+        .map(normalizeArea)
+        .filter(Boolean);
+
+      if (areas.length) {
+        // use ^...$ regex so that value must exactly equal the normalized area (case-insensitive)
+        const regexes = areas.map((a) => new RegExp(`^${escapeRegex(a)}$`, "i"));
+
+        // bookings: city field may be a string; normalize it before matching
+        bookingQuery.city = { $in: regexes };
+
+        // jobs: match either element of `cities` array or legacy `city` field
+        // MongoDB allows regex in queries; both arrays and strings will be tested
+        jobQuery.$or = [
+          ...regexes.map((r) => ({ cities: r })),
+          ...regexes.map((r) => ({ city: r })),
+        ];
+      }
     }
 
     if (status) {
       const s = String(status).toLowerCase();
-      if (["pending", "accepted", "in-progress", "completed", "cancelled"].includes(s)) {
+      if (
+        ["pending", "accepted", "in-progress", "completed", "cancelled"].includes(
+          s
+        )
+      ) {
         bookingQuery.status = s;
         jobQuery.status = s;
       }
@@ -122,8 +157,13 @@ export const getJobs = async (req, res) => {
         .sort({ createdAt: -1 })
         .lean();
     } catch (popErr) {
-      console.warn("Populate failed in getJobs, returning bookings without populate:", popErr.message);
-      bookings = await Booking.find(bookingQuery).sort({ createdAt: -1 }).lean();
+      console.warn(
+        "Populate failed in getJobs, returning bookings without populate:",
+        popErr.message
+      );
+      bookings = await Booking.find(bookingQuery)
+        .sort({ createdAt: -1 })
+        .lean();
     }
 
     const jobs = await Job.find(jobQuery).sort({ createdAt: -1 }).lean();
@@ -163,7 +203,7 @@ export const updateJobStatus = async (req, res) => {
     const id = req.params.id;
     const io = req.app.get("io");
     const s = String(status).toLowerCase();
-    if (!["pending", "accepted", "in-progress", "completed", "cancelled"].includes(s)) {
+    if (!["pending", "accepted", "in-progress", "completed", "cancelled", "inactive", "active"].includes(s)) {
       return res.status(400).json({ message: "Invalid status value" });
     }
 
@@ -188,6 +228,128 @@ export const updateJobStatus = async (req, res) => {
     return res.json({ success: true, job });
   } catch (error) {
     console.error("updateJobStatus error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/** PATCH /api/jobs/:id/remove-city - remove a single city from a Job's cities array */
+export const removeCityFromJob = async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { city } = req.body;
+    const io = req.app.get("io");
+
+    if (!city || !String(city).trim()) {
+      return res.status(400).json({ message: "city is required in request body" });
+    }
+
+    const cityStr = String(city).trim();
+    const regex = new RegExp(`^${escapeRegex(cityStr)}$`, "i");
+
+    // Prefer updating Job documents directly (jobs collection)
+    let job = await Job.findById(id);
+    if (!job) {
+      // maybe client passed a Booking id; try resolve Job id from booking.service
+      try {
+        const booking = await Booking.findById(id).lean();
+        if (booking && booking.service) {
+          // booking.service could be an id or an object
+          const svc = booking.service;
+          const jobId = (typeof svc === "string" && svc) || (svc && svc._id) || (svc && svc.id);
+          if (jobId) job = await Job.findById(jobId);
+        }
+      } catch (bErr) {
+        console.warn("removeCityFromJob booking lookup failed:", bErr.message);
+      }
+    }
+
+    if (!job) return res.status(404).json({ message: "Job not found; pass a Job id or a Booking referencing a Job" });
+
+    // perform atomic update: pull matching city (case-insensitive) by reading array and filtering
+    const updatedCities = (Array.isArray(job.cities) ? job.cities : []).filter((c) => !regex.test(String(c)));
+    const newCity = job.city && regex.test(String(job.city)) ? (updatedCities.length ? updatedCities[0] : "") : job.city || (updatedCities.length ? updatedCities[0] : "");
+
+    job.cities = updatedCities;
+    job.city = newCity;
+    await job.save();
+
+    if (io) io.emit("jobUpdated", job);
+    return res.json({ success: true, job });
+  } catch (error) {
+    console.error("removeCityFromJob error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+/** PATCH /api/jobs/:id/add-city - add a single city to a Job's cities array (or Booking) */
+export const addCityToJob = async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { city } = req.body;
+    const io = req.app.get("io");
+
+    if (!city || !String(city).trim()) {
+      return res.status(400).json({ message: "city is required in request body" });
+    }
+
+    const cityStr = String(city).trim();
+    const regex = new RegExp(`^${escapeRegex(cityStr)}$`, "i");
+
+    // Prefer updating Job documents directly (jobs collection)
+    let job = await Job.findById(id);
+    if (!job) {
+      // maybe client passed a Booking id; try resolve Job id from booking.service
+      try {
+        const booking = await Booking.findById(id).lean();
+        if (booking && booking.service) {
+          const svc = booking.service;
+          const jobId = (typeof svc === "string" && svc) || (svc && svc._id) || (svc && svc.id);
+          if (jobId) job = await Job.findById(jobId);
+        }
+      } catch (bErr) {
+        console.warn("addCityToJob booking lookup failed:", bErr.message);
+      }
+    }
+
+    if (!job) return res.status(404).json({ message: "Job not found; pass a Job id or a Booking referencing a Job" });
+
+    job.cities = Array.isArray(job.cities) ? job.cities : [];
+    const existsJob = job.cities.some((c) => regex.test(String(c)));
+    if (!existsJob) job.cities.push(cityStr);
+    if (!job.city) job.city = job.cities[0] || "";
+
+    await job.save();
+    if (io) io.emit("jobUpdated", job);
+    return res.json({ success: true, job });
+  } catch (error) {
+    console.error("addCityToJob error:", error);
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// delete job or booking by id
+export const deleteJob = async (req, res) => {
+  try {
+    const id = req.params.id;
+    const io = req.app.get("io");
+
+    let booking = null;
+    try {
+      booking = await Booking.findById(id);
+    } catch {}
+    if (booking) {
+      await booking.remove();
+      if (io) io.emit("bookingDeleted", booking);
+      return res.json({ success: true });
+    }
+
+    const job = await Job.findById(id);
+    if (!job) return res.status(404).json({ message: "Booking/Job not found" });
+    await job.remove();
+    if (io) io.emit("jobDeleted", job);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("deleteJob error:", error);
     return res.status(500).json({ message: "Server error", error: error.message });
   }
 };
